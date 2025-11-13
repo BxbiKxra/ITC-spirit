@@ -1,0 +1,17 @@
+ITC Spirit Scanner launch guide
+===============================
+
+1. From the project root run any static web server. A quick option is:
+   python -m http.server 5173
+
+2. Open http://localhost:5173 in a modern browser (Chrome, Edge, Firefox, Safari).
+
+3. Tap/click anywhere in the interface to unlock the Web Audio context, then choose a station source:
+   - Curated presets for the bundled global AM/FM streams.
+   - Radio Browser API to fetch fresh stations (enter keywords and an optional country code, then press "Fetch Stations").
+
+4. Enable VOX if you plan to record; the browser will prompt for microphone permissions.
+
+5. Use the session snapshot button to log your sweep, static, and VOX settings during an investigation.
+
+For automated verification you can run: npm test

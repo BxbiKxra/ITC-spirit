@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ITC Spirit Scanner</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>ITC Spirit Scanner</h1>
+      <p class="tagline">Digital P-SB11 inspired Instrumental Transcommunication Console</p>
+    </header>
+
+    <main>
+      <section class="status-panel" role="status" aria-live="polite">
+        <h2>System Status</h2>
+        <p class="status-message">
+          Waiting for audio activation. Live sweeps use curated internet AM/FM streams; physical receivers still require
+          external routing.
+        </p>
+      </section>
+
+      <section class="provider-panel" aria-label="Station source selection">
+        <h2>Station Source</h2>
+        <p>Choose the catalogue that sweep engines reference when locking to live streams.</p>
+        <div class="provider-options">
+          <label>
+            <input type="radio" name="station-provider" value="curated" checked />
+            Curated presets
+          </label>
+          <label>
+            <input type="radio" name="station-provider" value="radio-browser" />
+            Radio Browser API
+          </label>
+        </div>
+        <div class="radio-browser-controls" hidden>
+          <div class="radio-browser-grid">
+            <label>
+              Search keywords
+              <input type="text" id="station-query" placeholder="e.g. paranormal, talk radio, city name" />
+            </label>
+            <label>
+              Country code (optional)
+              <input type="text" id="station-country" maxlength="3" placeholder="US" />
+            </label>
+          </div>
+          <button id="station-search">Fetch Stations</button>
+          <p class="provider-hint">
+            Pulls live station metadata from <a href="https://www.radio-browser.info/" target="_blank" rel="noopener">Radio Browser</a>.
+            Results are filtered for playable AM/FM streams.
+          </p>
+        </div>
+        <p id="provider-status" class="provider-status" aria-live="polite">Curated preset bank &bull; 0 stations</p>
+      </section>
+
+      <section class="channel-section" aria-label="Dual sweep channels">
+        <div class="channel" data-channel="1">
+          <h2>Channel 1</h2>
+          <div class="mode-switch">
+            <label>
+              <input type="radio" name="channel1-mode" value="FM" checked />
+              FM
+            </label>
+            <label>
+              <input type="radio" name="channel1-mode" value="AM" />
+              AM
+            </label>
+          </div>
+          <div class="sweep-controls">
+            <label>
+              Sweep Rate (ms)
+              <input type="range" min="50" max="300" step="50" value="150" class="sweep-range" />
+            </label>
+            <div class="direction">
+              <button class="direction-button" data-direction="reverse">Reverse</button>
+              <button class="direction-button active" data-direction="forward">Forward</button>
+            </div>
+          </div>
+          <div class="volume-controls">
+            <button class="volume-button" data-adjust="-5">Vol -</button>
+            <div class="volume-level" aria-live="polite">Volume: 50%</div>
+            <button class="volume-button" data-adjust="5">Vol +</button>
+          </div>
+          <div class="frequency-panel">
+            <div class="frequency-display">87.5 MHz</div>
+            <div class="station-display" data-state="scan">Scanning…</div>
+            <canvas class="waveform" width="320" height="80" aria-hidden="true"></canvas>
+            <div class="signal-meter">
+              <div class="signal-bar" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="channel" data-channel="2">
+          <h2>Channel 2</h2>
+          <div class="mode-switch">
+            <label>
+              <input type="radio" name="channel2-mode" value="FM" checked />
+              FM
+            </label>
+            <label>
+              <input type="radio" name="channel2-mode" value="AM" />
+              AM
+            </label>
+          </div>
+          <div class="sweep-controls">
+            <label>
+              Sweep Rate (ms)
+              <input type="range" min="50" max="350" step="50" value="200" class="sweep-range" />
+            </label>
+            <div class="direction">
+              <button class="direction-button" data-direction="reverse">Reverse</button>
+              <button class="direction-button active" data-direction="forward">Forward</button>
+            </div>
+          </div>
+          <div class="volume-controls">
+            <button class="volume-button" data-adjust="-5">Vol -</button>
+            <div class="volume-level" aria-live="polite">Volume: 50%</div>
+            <button class="volume-button" data-adjust="5">Vol +</button>
+          </div>
+          <div class="frequency-panel">
+            <div class="frequency-display">87.5 MHz</div>
+            <div class="station-display" data-state="scan">Scanning…</div>
+            <canvas class="waveform" width="320" height="80" aria-hidden="true"></canvas>
+            <div class="signal-meter">
+              <div class="signal-bar" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="temperature-static">
+        <div class="temperature">
+          <h3>Crystal Temperature Drift</h3>
+          <div class="temperature-scale">
+            <button class="temp-adjust" data-adjust="-5">-5°</button>
+            <button class="temp-adjust" data-adjust="-1">-1°</button>
+            <div class="temp-display">0°</div>
+            <button class="temp-adjust" data-adjust="1">+1°</button>
+            <button class="temp-adjust" data-adjust="5">+5°</button>
+          </div>
+          <button class="temp-reset">Temperature Reset</button>
+        </div>
+
+        <div class="static-controls">
+          <h3>Static &amp; Noise Bed</h3>
+          <label class="switch">
+            <input type="checkbox" id="static-toggle" checked />
+            <span>Static</span>
+          </label>
+          <div class="noise-type">
+            <label>
+              <input type="radio" name="noise-type" value="white" checked />
+              White Noise
+            </label>
+            <label>
+              <input type="radio" name="noise-type" value="pink" />
+              Pink Noise
+            </label>
+          </div>
+          <label>
+            Static Level
+            <input type="range" id="static-level" min="0" max="1" step="0.01" value="0.4" />
+          </label>
+        </div>
+      </section>
+
+      <section class="recording-section">
+        <h3>VOX Recording &amp; Playback</h3>
+        <div class="vox-controls">
+          <button id="vox-toggle">Enable VOX</button>
+          <label>
+            VOX Sensitivity
+            <input type="range" id="vox-threshold" min="-80" max="-20" value="-50" />
+          </label>
+        </div>
+        <div class="transport">
+          <button id="record">Record</button>
+          <button id="stop" disabled>Stop</button>
+          <button id="play" disabled>Play</button>
+          <button id="pause" disabled>Pause</button>
+          <button id="rewind" disabled>Reverse</button>
+          <button id="forward" disabled>Forward</button>
+        </div>
+        <div class="playback-speed">
+          <span>Playback Speed</span>
+          <input type="range" id="playback-speed" min="-1" max="1" step="0.25" value="0" />
+          <div class="speed-label">Normal</div>
+        </div>
+        <ul class="recordings-list" aria-live="polite"></ul>
+      </section>
+
+      <section class="session-section">
+        <h3>Session Management</h3>
+        <button id="save-session">Save Session Snapshot</button>
+        <ul class="session-log" aria-live="polite"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>Prototype utility for paranormal research &ndash; dual sweep, VOX, and visual telemetry.</p>
+    </footer>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
