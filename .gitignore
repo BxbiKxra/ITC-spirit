@@ -1,0 +1,52 @@
+# big model / cache directories
+.cache/
+.ollama/
+.conda/
+.bun/
+.cargo/
+.dotnet/
+.gradle/
+.local/
+.lmstudio-home-pointer
+.mempalace/
+.letta/
+.codex/
+.cursor/
+.antigravity/
+.cagent/
+.clawdbot/
+.commontk/
+.hf-cli/
+.ipython/
+.jupyter/
+.matplotlib/
+.dbus-keyrings/
+.docker/
+
+# Claude / OpenClaw / agents
+.claude/
+.openclaw/
+.agents/
+.gemini/
+.elevenlabs/
+
+# secrets
+.env
+*.env
+
+# node / python
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# build output
+OneDrive/Desktop/Denlight-main/frontend/build/
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+({
+-1.14-windows.xml

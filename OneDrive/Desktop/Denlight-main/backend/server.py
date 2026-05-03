@@ -25,7 +25,16 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+import re
+import json
 import litellm
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
+try:
+    from pywebpush import webpush, WebPushException
+    _WEBPUSH_AVAILABLE = True
+except ImportError:
+    _WEBPUSH_AVAILABLE = False
 
 
 ROOT_DIR = Path(__file__).parent
@@ -76,6 +85,41 @@ async def encrypt_secret(secret: str) -> str:
 async def decrypt_secret(encrypted: str) -> str:
     key = await encryption_key()
     return Fernet(key).decrypt(encrypted.encode()).decode()
+
+
+async def get_vapid_keys() -> tuple:
+    doc = await db.app_secrets.find_one({"id": "vapid-keys"}, {"_id": 0})
+    if doc:
+        return doc["private_pem"], doc["public_key"]
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    private_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
+    pub_bytes = private_key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
+    public_key = base64.urlsafe_b64encode(pub_bytes).rstrip(b'=').decode()
+    await db.app_secrets.insert_one({"id": "vapid-keys", "private_pem": private_pem, "public_key": public_key, "created_at": now_iso()})
+    return private_pem, public_key
+
+
+async def send_push_notifications(user_id: str, title: str, body: str):
+    if not _WEBPUSH_AVAILABLE:
+        return
+    try:
+        private_pem, _ = await get_vapid_keys()
+        subs = await db.push_subscriptions.find({"user_id": user_id}, {"_id": 0}).to_list(length=50)
+        payload = json.dumps({"title": title, "body": body})
+        for sub in subs:
+            try:
+                webpush(
+                    subscription_info={"endpoint": sub["endpoint"], "keys": sub["keys"]},
+                    data=payload,
+                    vapid_private_key=private_pem,
+                    vapid_claims={"sub": "mailto:admin@denlight.app"},
+                )
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status in (404, 410):
+                    await db.push_subscriptions.delete_one({"endpoint": sub["endpoint"]})
+    except Exception:
+        pass
 
 
 async def verify_firebase_token(id_token: str, project_id: str) -> Dict[str, Any]:
@@ -129,7 +173,7 @@ async def verify_firebase_token(id_token: str, project_id: str) -> Dict[str, Any
 
 async def authenticated_user_from_request(request: Request) -> Optional[str]:
     path = request.url.path
-    if request.method == "OPTIONS" or path in {"/api", "/api/"} or path.startswith("/api/auth/firebase-login") or path.startswith("/api/telegram/webhook"):
+    if request.method == "OPTIONS" or path in {"/api", "/api/"} or path.startswith("/api/auth/firebase-login") or path.startswith("/api/telegram/webhook") or path.startswith("/api/mcp"):
         return None
     authorization = request.headers.get("authorization", "")
     project_id = request.headers.get("x-firebase-project-id", "")
@@ -173,9 +217,19 @@ class Preferences(BaseModel):
     user_bubble: str = "#F5F5F4"
     ai_bubble: str = "rgba(255,255,255,0.72)"
     sparkle_edges: bool = True
+    sparkle_color: str = "#d4af37"
     notifications: bool = True
     blur_front_image: bool = False
     bob_front_image: bool = True
+    den_name: str = ""
+    home_mode: str = "animated"
+    home_image: str = ""
+    now_playing: str = ""
+    pet_id: str = "wisp"
+    pet_name: str = ""
+    pet_emoji: str = ""
+    pet_desc: str = ""
+    pet_enabled: bool = True
 
 
 class AgentProfile(BaseModel):
@@ -264,6 +318,7 @@ class MessageCreate(BaseModel):
     reply_to: Optional[str] = None
     attachments: List[Attachment] = Field(default_factory=list)
     provider_keys: Dict[str, str] = Field(default_factory=dict)
+    mentions: List[str] = Field(default_factory=list)
 
 
 class GalleryItem(BaseModel):
@@ -285,6 +340,78 @@ class GalleryCreate(BaseModel):
     notes: str = ""
 
 
+class StickyNote(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=new_id)
+    user_id: str = "demo-user"
+    title: str = ""
+    content: str = ""
+    color: str = "#fef08a"
+    author: str = "human"
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class NoteCreate(BaseModel):
+    title: str = ""
+    content: str = ""
+    color: str = "#fef08a"
+    author: str = "human"
+
+
+class NoteUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    color: Optional[str] = None
+
+
+class LibraryEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=new_id)
+    user_id: str = "demo-user"
+    agent_id: str = ""
+    agent_name: str = ""
+    title: str = ""
+    content: str = ""
+    category: str = "note"
+    tags: List[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class LibraryEntryCreate(BaseModel):
+    agent_id: str = ""
+    agent_name: str = ""
+    title: str = ""
+    content: str = ""
+    category: str = "note"
+    tags: List[str] = Field(default_factory=list)
+
+
+class LibraryEntryUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: PushSubscriptionKeys
+
+class McpRpcRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    method: str
+    params: Optional[Dict[str, Any]] = None
+    id: Optional[Any] = None
+
+
 class Workspace(BaseModel):
     profile: UserProfile
     preferences: Preferences
@@ -292,6 +419,8 @@ class Workspace(BaseModel):
     chats: List[ChatRoom]
     active_chat: Optional[Dict[str, Any]] = None
     gallery: List[GalleryItem]
+    notes: List[StickyNote] = Field(default_factory=list)
+    library: List[LibraryEntry] = Field(default_factory=list)
 
 
 class ProfileUpdate(BaseModel):
@@ -308,9 +437,19 @@ class PreferencesUpdate(BaseModel):
     user_bubble: Optional[str] = None
     ai_bubble: Optional[str] = None
     sparkle_edges: Optional[bool] = None
+    sparkle_color: Optional[str] = None
     notifications: Optional[bool] = None
     blur_front_image: Optional[bool] = None
     bob_front_image: Optional[bool] = None
+    den_name: Optional[str] = None
+    home_mode: Optional[str] = None
+    home_image: Optional[str] = None
+    now_playing: Optional[str] = None
+    pet_id: Optional[str] = None
+    pet_name: Optional[str] = None
+    pet_emoji: Optional[str] = None
+    pet_desc: Optional[str] = None
+    pet_enabled: Optional[bool] = None
 
 
 class FirebaseLogin(BaseModel):
@@ -634,12 +773,12 @@ async def telegram_webhook(user_id: str, secret: str, request: Request):
     chat = await db.chats.find_one({"id": chat_id, "user_id": user_id}, {"_id": 0})
     agents_map = await get_agents_map(user_id)
     selected_agents = [agents_map[agent_id] for agent_id in chat.get("agent_ids", []) if agent_id in agents_map and agents_map[agent_id].get("enabled", True)] if chat else []
-    memory = await recent_memory(user_id)
     keys = await stored_provider_keys(user_id)
     ai_messages = []
     for index, agent in enumerate(selected_agents):
         await asyncio.sleep(0.35 + (index * 0.2))
-        content_reply = await agent_reply(agent, content, memory, keys, chat_id)
+        memory = await agent_memory(user_id, agent["id"])
+        content_reply = await agent_reply(agent, content, memory, keys, chat_id, user_id)
         ai_doc = ChatMessage(
             chat_id=chat_id,
             user_id=user_id,
@@ -668,14 +807,189 @@ async def generate_image(payload: ImageGenerateInput, user_id: str = Header(defa
 
     def call_openai() -> str:
         client_openai = OpenAI(api_key=key)
-        response = client_openai.images.generate(model="gpt-image-1", prompt=payload.prompt, size="1024x1024")
-        return response.data[0].b64_json
+        response = client_openai.images.generate(model="dall-e-3", prompt=payload.prompt, n=1, size="1024x1024")
+        return response.data[0].url
 
-    image_b64 = await asyncio.to_thread(call_openai)
-    data_url = f"data:image/png;base64,{image_b64}"
-    item = GalleryItem(user_id=user_id, title=payload.prompt[:72], type="generated", url=data_url, notes="OpenAI generated image").model_dump()
+    image_url = await asyncio.to_thread(call_openai)
+    item = GalleryItem(user_id=user_id, title=payload.prompt[:72], type="generated", url=image_url, notes="OpenAI generated image").model_dump()
+    await db.gallery.insert_one(item.copy())
+    return {"image_url": image_url, "gallery_item": item}
+
+
+@api_router.get("/ai/gemini-models")
+async def list_gemini_models(user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    key = await get_secret(user_id, "gemini")
+    if not key:
+        raise HTTPException(status_code=400, detail="Save your Gemini key first")
+    try:
+        def fetch():
+            resp = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}", timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        data = await asyncio.to_thread(fetch)
+        models = [
+            {"name": m.get("name"), "methods": m.get("supportedGenerationMethods", [])}
+            for m in data.get("models", [])
+        ]
+        return {"models": models}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@api_router.post("/ai/generate-image/gemini")
+async def generate_image_gemini(payload: ImageGenerateInput, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    key = await get_secret(user_id, "gemini")
+    if not key:
+        raise HTTPException(status_code=400, detail="Save your Gemini key first")
+    if len(payload.prompt.strip()) < 4:
+        raise HTTPException(status_code=400, detail="Image prompt is too short")
+
+    def call_gemini() -> str:
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={key}"
+        resp = requests.post(
+            api_url,
+            json={
+                "contents": [{"parts": [{"text": payload.prompt}]}],
+                "generationConfig": {"responseModalities": ["IMAGE"]},
+            },
+            timeout=90,
+        )
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise ValueError(f"Gemini image error ({resp.status_code}): {detail}")
+        data = resp.json()
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        for part in parts:
+            inline = part.get("inlineData", {})
+            if inline.get("data"):
+                mime = inline.get("mimeType", "image/png")
+                return mime, inline["data"]
+        raise ValueError("Gemini returned no image. Try a more descriptive prompt.")
+
+    try:
+        mime, b64 = await asyncio.to_thread(call_gemini)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Gemini image gen failed")
+        raise HTTPException(status_code=500, detail=f"Gemini image generation failed: {str(exc)[:200]}")
+
+    data_url = f"data:{mime};base64,{b64}"
+    item = GalleryItem(user_id=user_id, title=payload.prompt[:72], type="generated", url=data_url, notes="Gemini Imagen generated").model_dump()
     await db.gallery.insert_one(item.copy())
     return {"image_url": data_url, "gallery_item": item}
+
+
+@api_router.post("/ai/generate-music")
+async def generate_music(payload: ImageGenerateInput, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    key = await get_secret(user_id, "gemini")
+    if not key:
+        raise HTTPException(status_code=400, detail="Save your Gemini key first")
+    if len(payload.prompt.strip()) < 4:
+        raise HTTPException(status_code=400, detail="Music prompt is too short")
+
+    def call_lyria() -> tuple:
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent?key={key}"
+        resp = requests.post(
+            api_url,
+            json={
+                "contents": [{"parts": [{"text": payload.prompt}]}],
+                "generationConfig": {"responseModalities": ["AUDIO"]},
+            },
+            timeout=120,
+        )
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise ValueError(f"Lyria error ({resp.status_code}): {detail}")
+        data = resp.json()
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        for part in parts:
+            inline = part.get("inlineData", {})
+            if inline.get("data"):
+                return inline.get("mimeType", "audio/wav"), inline["data"]
+        raise ValueError("Lyria returned no audio data.")
+
+    try:
+        mime, b64 = await asyncio.to_thread(call_lyria)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Lyria music gen failed")
+        raise HTTPException(status_code=500, detail=f"Music generation failed: {str(exc)[:200]}")
+
+    data_url = f"data:{mime};base64,{b64}"
+    item = GalleryItem(user_id=user_id, title=payload.prompt[:72], type="music", url=data_url, notes="Lyria generated music").model_dump()
+    await db.gallery.insert_one(item.copy())
+    return {"audio_url": data_url, "gallery_item": item}
+
+
+@api_router.post("/ai/generate-video")
+async def generate_video(payload: ImageGenerateInput, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    key = await get_secret(user_id, "gemini")
+    if not key:
+        raise HTTPException(status_code=400, detail="Save your Gemini key first")
+    if len(payload.prompt.strip()) < 4:
+        raise HTTPException(status_code=400, detail="Video prompt is too short")
+
+    def submit_job() -> str:
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-fast-generate-001:predictLongRunning?key={key}"
+        resp = requests.post(
+            api_url,
+            json={
+                "instances": [{"prompt": payload.prompt}],
+                "parameters": {"sampleCount": 1, "durationSeconds": 5, "aspectRatio": "16:9"},
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                detail = resp.text[:300]
+            raise ValueError(f"Veo submit error ({resp.status_code}): {detail}")
+        return resp.json().get("name", "")
+
+    try:
+        operation_name = await asyncio.to_thread(submit_job)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not operation_name:
+        raise HTTPException(status_code=500, detail="Veo did not return an operation name")
+
+    # Poll until done (max 5 minutes)
+    poll_url = f"https://generativelanguage.googleapis.com/v1beta/{operation_name}?key={key}"
+    for _ in range(30):
+        await asyncio.sleep(10)
+        def poll():
+            r = requests.get(poll_url, timeout=15)
+            r.raise_for_status()
+            return r.json()
+        result = await asyncio.to_thread(poll)
+        if result.get("done"):
+            samples = result.get("response", {}).get("generateVideoResponse", {}).get("generatedSamples", [])
+            if not samples:
+                raise HTTPException(status_code=500, detail="Veo completed but returned no video samples")
+            video = samples[0].get("video", {})
+            uri = video.get("uri") or video.get("url", "")
+            b64 = video.get("bytesBase64Encoded", "")
+            if b64:
+                video_url = f"data:video/mp4;base64,{b64}"
+            elif uri:
+                video_url = uri
+            else:
+                raise HTTPException(status_code=500, detail="Veo returned no video URI or data")
+            item = GalleryItem(user_id=user_id, title=payload.prompt[:72], type="video", url=video_url, notes="Veo generated video").model_dump()
+            await db.gallery.insert_one(item.copy())
+            return {"video_url": video_url, "gallery_item": item}
+
+    raise HTTPException(status_code=504, detail="Veo video generation timed out after 5 minutes")
 
 
 @api_router.post("/ai/transcribe")
@@ -745,6 +1059,8 @@ async def workspace(user_id: str = Header(default="demo-user", alias="X-User-Id"
     agents = await db.agents.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(100)
     chats = await db.chats.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(100)
     gallery = await db.gallery.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    notes = await db.notes.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(200)
+    library = await db.library.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(500)
 
     active_chat = None
     if chats:
@@ -757,6 +1073,8 @@ async def workspace(user_id: str = Header(default="demo-user", alias="X-User-Id"
         chats=[ChatRoom(**chat) for chat in chats],
         active_chat=active_chat,
         gallery=[GalleryItem(**item) for item in gallery],
+        notes=[StickyNote(**n) for n in notes],
+        library=[LibraryEntry(**e) for e in library],
     )
 
 
@@ -773,7 +1091,7 @@ async def save_profile(payload: ProfileUpdate, user_id: str = Header(default="de
 @api_router.post("/preferences", response_model=Preferences)
 async def save_preferences(payload: PreferencesUpdate, user_id: str = Header(default="demo-user", alias="X-User-Id")):
     await ensure_seed(user_id)
-    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None or k in {"pet_name", "pet_emoji", "pet_desc", "now_playing"}}
     await db.preferences.update_one({"user_id": user_id}, {"$set": update}, upsert=True)
     doc = await db.preferences.find_one({"user_id": user_id}, {"_id": 0, "user_id": 0})
     return Preferences(**doc)
@@ -894,13 +1212,199 @@ def provider_key(provider: str, keys: Dict[str, str]) -> str:
     return ""
 
 
-async def recent_memory(user_id: str) -> str:
-    messages = await db.messages.find({"user_id": user_id, "role": {"$in": ["user", "ai"]}}, {"_id": 0}).sort("created_at", -1).to_list(12)
+async def agent_memory(user_id: str, agent_id: str) -> str:
+    agent_chats = await db.chats.find(
+        {"user_id": user_id, "agent_ids": agent_id}, {"id": 1, "_id": 0}
+    ).to_list(50)
+    chat_ids = [c["id"] for c in agent_chats]
+    if not chat_ids:
+        return ""
+    messages = await db.messages.find(
+        {"user_id": user_id, "chat_id": {"$in": chat_ids}, "role": {"$in": ["user", "ai"]}},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(12)
     ordered = list(reversed(messages))
     return "\n".join([f"{m['sender_name']}: {m['content'][:600]}" for m in ordered])
 
 
-async def generate_with_emergent(agent: Dict[str, Any], message: str, memory: str, key: str, chat_id: str) -> str:
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information, news, facts, or research. Use when you need up-to-date information not in your training data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate an image using DALL-E 3 from a text description. The image is saved to the gallery automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Detailed description of the image to generate"}
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_note",
+            "description": "Create, read, update, or delete sticky notes in the shared workspace. Both you and the human can see these notes. Use to leave reminders, save ideas, or note important things from the conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "read_all", "update", "delete"], "description": "Action to perform"},
+                    "title": {"type": "string", "description": "Note title (for create or update)"},
+                    "content": {"type": "string", "description": "Note content (for create or update)"},
+                    "color": {"type": "string", "description": "Note colour hex e.g. #fef08a, #fca5a5, #86efac, #93c5fd, #d8b4fe (for create or update)"},
+                    "note_id": {"type": "string", "description": "Note ID (required for update and delete)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_library",
+            "description": "Manage your personal library in Denlight — save learnings, project ideas, memories, and notes. Your library is separate from other agents. The human can read all entries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "read_all", "read", "update", "delete", "search"], "description": "Action to perform"},
+                    "title": {"type": "string", "description": "Entry title"},
+                    "content": {"type": "string", "description": "Entry content — supports markdown"},
+                    "category": {"type": "string", "enum": ["learning", "project", "idea", "note", "memory"], "description": "Entry category"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the entry"},
+                    "entry_id": {"type": "string", "description": "Entry ID (for read, update, delete)"},
+                    "query": {"type": "string", "description": "Search terms (for search action)"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+]
+
+
+async def run_tool(name: str, args: Dict[str, Any], user_id: str, keys: Dict[str, str], agent: Dict[str, Any] = None) -> str:
+    if name == "web_search":
+        query = args.get("query", "")
+        tavily_key = keys.get("tavily", "")
+        if not tavily_key:
+            return "Web search unavailable — no Tavily key saved in Integrations."
+        def _search():
+            resp = requests.post(
+                "https://api.tavily.com/search",
+                json={"api_key": tavily_key, "query": query, "max_results": 5, "search_depth": "basic"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        data = await asyncio.to_thread(_search)
+        results = data.get("results", [])
+        if not results:
+            return f"No results found for: {query}"
+        return "\n\n".join([
+            f"{r.get('title', '')}\n{r.get('content', '')[:400]}\nSource: {r.get('url', '')}"
+            for r in results
+        ])
+
+    if name == "generate_image":
+        prompt = args.get("prompt", "")
+        openai_key = keys.get("openai", "")
+        if not openai_key:
+            return "Image generation unavailable — no OpenAI key saved in Integrations."
+        def _gen():
+            client = OpenAI(api_key=openai_key)
+            img = client.images.generate(model="dall-e-3", prompt=prompt, n=1, size="1024x1024")
+            return img.data[0].url
+        url = await asyncio.to_thread(_gen)
+        item = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "title": prompt[:80],
+            "url": url,
+            "type": "generated",
+            "created_at": now_iso(),
+        }
+        await db.gallery.insert_one(item.copy())
+        return f"Image generated and saved to gallery: {url}"
+
+    if name == "manage_note":
+        action = args.get("action", "read_all")
+        author_name = (agent or {}).get("name", "AI")
+        if action == "read_all":
+            notes = await db.notes.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(50)
+            if not notes:
+                return "No sticky notes yet in the workspace."
+            return "\n\n".join([f"[{n['id'][:8]}] {n.get('title', 'Untitled')}: {n.get('content', '')}" for n in notes])
+        elif action == "create":
+            note = {"id": str(uuid.uuid4()), "user_id": user_id, "title": args.get("title", ""), "content": args.get("content", ""), "color": args.get("color", "#fef08a"), "author": author_name, "created_at": now_iso(), "updated_at": now_iso()}
+            await db.notes.insert_one(note.copy())
+            return f"Note created: '{note['title']}'"
+        elif action == "update":
+            note_id = args.get("note_id", "")
+            update = {k: args[k] for k in ["title", "content", "color"] if k in args}
+            update["updated_at"] = now_iso()
+            await db.notes.update_one({"id": note_id, "user_id": user_id}, {"$set": update})
+            return f"Note {note_id[:8]} updated."
+        elif action == "delete":
+            note_id = args.get("note_id", "")
+            await db.notes.delete_one({"id": note_id, "user_id": user_id})
+            return f"Note {note_id[:8]} deleted."
+
+    if name == "manage_library":
+        action = args.get("action", "read_all")
+        agent_id = (agent or {}).get("id", "")
+        agent_name = (agent or {}).get("name", "AI")
+        if action == "read_all":
+            entries = await db.library.find({"user_id": user_id, "agent_id": agent_id}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+            if not entries:
+                return "Your library is empty. Use create to add your first entry."
+            return "\n\n".join([f"[{e['id'][:8]}] ({e.get('category','note')}) {e.get('title','Untitled')}\n{e.get('content','')[:300]}" for e in entries])
+        elif action == "read":
+            entry_id = args.get("entry_id", "")
+            e = await db.library.find_one({"id": entry_id, "user_id": user_id, "agent_id": agent_id}, {"_id": 0})
+            if not e:
+                return "Entry not found."
+            return f"# {e.get('title','Untitled')}\nCategory: {e.get('category')}\nTags: {', '.join(e.get('tags', []))}\n\n{e.get('content','')}"
+        elif action == "search":
+            query = args.get("query", "").lower()
+            entries = await db.library.find({"user_id": user_id, "agent_id": agent_id}, {"_id": 0}).to_list(200)
+            matches = [e for e in entries if query in e.get("title", "").lower() or query in e.get("content", "").lower() or query in " ".join(e.get("tags", [])).lower()]
+            if not matches:
+                return f"No library entries found matching '{query}'."
+            return "\n\n".join([f"[{e['id'][:8]}] {e.get('title','Untitled')}" for e in matches])
+        elif action == "create":
+            entry = {"id": str(uuid.uuid4()), "user_id": user_id, "agent_id": agent_id, "agent_name": agent_name, "title": args.get("title", ""), "content": args.get("content", ""), "category": args.get("category", "note"), "tags": args.get("tags", []), "created_at": now_iso(), "updated_at": now_iso()}
+            await db.library.insert_one(entry.copy())
+            return f"Library entry created: '{entry['title']}'"
+        elif action == "update":
+            entry_id = args.get("entry_id", "")
+            update = {k: args[k] for k in ["title", "content", "category", "tags"] if k in args}
+            update["updated_at"] = now_iso()
+            await db.library.update_one({"id": entry_id, "user_id": user_id, "agent_id": agent_id}, {"$set": update})
+            return f"Library entry {entry_id[:8]} updated."
+        elif action == "delete":
+            entry_id = args.get("entry_id", "")
+            await db.library.delete_one({"id": entry_id, "user_id": user_id, "agent_id": agent_id})
+            return f"Library entry {entry_id[:8]} deleted."
+
+    return f"Unknown tool: {name}"
+
+
+async def generate_with_emergent(agent: Dict[str, Any], message: str, memory: str, key: str, chat_id: str, user_id: str = "", keys: Dict[str, str] = None) -> str:
     provider = agent["provider"]
     model = agent.get("model") or "gpt-4o"
     system_message = (
@@ -912,15 +1416,29 @@ async def generate_with_emergent(agent: Dict[str, Any], message: str, memory: st
     )
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
     litellm_model = f"{provider_map[provider]}/{model}"
-    response = await litellm.acompletion(
-        model=litellm_model,
-        api_key=key,
-        messages=[
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": message},
-        ],
-    )
-    return response.choices[0].message.content
+    msgs = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": message},
+    ]
+    use_tools = agent.get("tools_enabled") and keys is not None
+    last_content = ""
+    for _ in range(6):
+        kwargs: Dict[str, Any] = {"model": litellm_model, "api_key": key, "messages": msgs}
+        if use_tools:
+            kwargs["tools"] = AGENT_TOOLS
+            kwargs["tool_choice"] = "auto"
+        response = await litellm.acompletion(**kwargs)
+        choice = response.choices[0]
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            msgs.append(choice.message)
+            for tc in tool_calls:
+                result = await run_tool(tc.function.name, json.loads(tc.function.arguments), user_id, keys or {}, agent)
+                msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        else:
+            last_content = choice.message.content or ""
+            break
+    return last_content
 
 
 async def generate_grok(agent: Dict[str, Any], message: str, memory: str, key: str) -> str:
@@ -990,14 +1508,14 @@ def setup_reply(agent: Dict[str, Any]) -> str:
     )
 
 
-async def agent_reply(agent: Dict[str, Any], message: str, memory: str, keys: Dict[str, str], chat_id: str) -> str:
+async def agent_reply(agent: Dict[str, Any], message: str, memory: str, keys: Dict[str, str], chat_id: str, user_id: str = "") -> str:
     provider = agent["provider"]
     key = provider_key(provider, keys)
     if not key:
         return setup_reply(agent)
     try:
         if provider in {"openai", "anthropic", "gemini"}:
-            return await generate_with_emergent(agent, message, memory, key, chat_id)
+            return await generate_with_emergent(agent, message, memory, key, chat_id, user_id, keys)
         if provider == "grok":
             return await generate_grok(agent, message, memory, key)
         if provider == "ollama":
@@ -1035,14 +1553,31 @@ async def send_message(chat_id: str, payload: MessageCreate, user_id: str = Head
     await db.messages.insert_one(human.copy())
 
     agents_map = await get_agents_map(user_id)
-    selected_agents = [agents_map[agent_id] for agent_id in chat.get("agent_ids", []) if agent_id in agents_map and agents_map[agent_id].get("enabled", True)]
-    memory = await recent_memory(user_id)
+    all_agents = [agents_map[agent_id] for agent_id in chat.get("agent_ids", []) if agent_id in agents_map and agents_map[agent_id].get("enabled", True)]
+
+    # Resolve @mentions — parse from content and from the explicit mentions list
+    raw = re.findall(r'@(\w+)', payload.content, re.IGNORECASE)
+    mention_names = {m.lower() for m in (raw + list(payload.mentions))}
+    if "everyone" in mention_names or not mention_names:
+        selected_agents = all_agents
+    else:
+        selected_agents = [a for a in all_agents if a["name"].lower() in mention_names] or all_agents
+
     saved_keys = await stored_provider_keys(user_id)
     provider_keys = {**saved_keys, **{k: v for k, v in payload.provider_keys.items() if v}}
+    prefs_doc = await db.preferences.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    now_playing = prefs_doc.get("now_playing", "")
     ai_messages = []
     for index, agent in enumerate(selected_agents):
-        await asyncio.sleep(0.65 + (index * 0.35))
-        content = await agent_reply(agent, payload.content, memory, provider_keys, chat_id)
+        await asyncio.sleep(0.7 + (index * 0.6))
+        memory = await agent_memory(user_id, agent["id"])
+        augmented = payload.content
+        if now_playing:
+            augmented = f"{augmented}\n\n[Context: {agent['name'].split()[0]} can see that the human is currently listening to: {now_playing}]"
+        if ai_messages:
+            peer_block = "\n".join(f"{m['sender_name']}: {m['content'][:400]}" for m in ai_messages)
+            augmented = f"{augmented}\n\n[Your AI companions already replied this turn — read before responding:\n{peer_block}]"
+        content = await agent_reply(agent, augmented, memory, provider_keys, chat_id, user_id)
         ai_doc = ChatMessage(
             chat_id=chat_id,
             user_id=user_id,
@@ -1058,6 +1593,14 @@ async def send_message(chat_id: str, payload: MessageCreate, user_id: str = Head
 
     await db.chats.update_one({"id": chat_id, "user_id": user_id}, {"$set": {"updated_at": now_iso()}})
     messages = await db.messages.find({"chat_id": chat_id, "user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    if ai_messages:
+        if prefs_doc.get("notifications", True):
+            last_ai = ai_messages[-1]
+            asyncio.create_task(send_push_notifications(
+                user_id,
+                f"{last_ai['sender_name']} replied",
+                last_ai["content"][:120],
+            ))
     return {"user_message": human, "ai_messages": ai_messages, "messages": messages}
 
 
@@ -1066,6 +1609,87 @@ async def add_gallery_item(payload: GalleryCreate, user_id: str = Header(default
     item = GalleryItem(user_id=user_id, **payload.model_dump()).model_dump()
     await db.gallery.insert_one(item.copy())
     return GalleryItem(**item)
+
+
+@api_router.get("/notes")
+async def get_notes(user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    notes = await db.notes.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(200)
+    return [StickyNote(**n) for n in notes]
+
+
+@api_router.post("/notes", response_model=StickyNote)
+async def create_note(payload: NoteCreate, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    note = {"id": str(uuid.uuid4()), "user_id": user_id, **payload.model_dump(), "created_at": now_iso(), "updated_at": now_iso()}
+    await db.notes.insert_one(note.copy())
+    return StickyNote(**note)
+
+
+@api_router.put("/notes/{note_id}", response_model=StickyNote)
+async def update_note(note_id: str, payload: NoteUpdate, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    update["updated_at"] = now_iso()
+    await db.notes.update_one({"id": note_id, "user_id": user_id}, {"$set": update})
+    doc = await db.notes.find_one({"id": note_id}, {"_id": 0})
+    return StickyNote(**doc)
+
+
+@api_router.delete("/notes/{note_id}")
+async def delete_note(note_id: str, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    await db.notes.delete_one({"id": note_id, "user_id": user_id})
+    return {"ok": True}
+
+
+@api_router.get("/library")
+async def get_library(agent_id: Optional[str] = None, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    query: Dict[str, Any] = {"user_id": user_id}
+    if agent_id:
+        query["agent_id"] = agent_id
+    entries = await db.library.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    return [LibraryEntry(**e) for e in entries]
+
+
+@api_router.post("/library", response_model=LibraryEntry)
+async def create_library_entry(payload: LibraryEntryCreate, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    entry = {"id": str(uuid.uuid4()), "user_id": user_id, **payload.model_dump(), "created_at": now_iso(), "updated_at": now_iso()}
+    await db.library.insert_one(entry.copy())
+    return LibraryEntry(**entry)
+
+
+@api_router.put("/library/{entry_id}", response_model=LibraryEntry)
+async def update_library_entry(entry_id: str, payload: LibraryEntryUpdate, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    update["updated_at"] = now_iso()
+    await db.library.update_one({"id": entry_id, "user_id": user_id}, {"$set": update})
+    doc = await db.library.find_one({"id": entry_id}, {"_id": 0})
+    return LibraryEntry(**doc)
+
+
+@api_router.delete("/library/{entry_id}")
+async def delete_library_entry(entry_id: str, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    await db.library.delete_one({"id": entry_id, "user_id": user_id})
+    return {"ok": True}
+
+
+@api_router.get("/push/vapid-key")
+async def push_vapid_key(user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    _, public_key = await get_vapid_keys()
+    return {"public_key": public_key}
+
+
+@api_router.post("/push/subscribe")
+async def push_subscribe(sub: PushSubscription, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    await db.push_subscriptions.update_one(
+        {"user_id": user_id, "endpoint": sub.endpoint},
+        {"$set": {"user_id": user_id, "endpoint": sub.endpoint, "keys": sub.keys.model_dump(), "updated_at": now_iso()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api_router.delete("/push/subscribe")
+async def push_unsubscribe(sub: PushSubscription, user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    await db.push_subscriptions.delete_one({"user_id": user_id, "endpoint": sub.endpoint})
+    return {"ok": True}
 
 
 @api_router.get("/export/{chat_id}")
@@ -1131,6 +1755,121 @@ async def export_chat_pdf(chat_id: str, user_id: str = Header(default="demo-user
     buffer.seek(0)
     filename = f"{chat['title'].replace(' ', '-').lower()}-{chat_id[:6]}.pdf"
     return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+MCP_TOOLS = [
+    {"name": "list_chats", "description": "List all chat rooms in the den.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "get_chat", "description": "Get the messages for a specific chat room.", "inputSchema": {"type": "object", "properties": {"chat_id": {"type": "string"}}, "required": ["chat_id"]}},
+    {"name": "send_message", "description": "Send a message to a chat room and get AI replies.", "inputSchema": {"type": "object", "properties": {"chat_id": {"type": "string"}, "content": {"type": "string"}}, "required": ["chat_id", "content"]}},
+    {"name": "list_agents", "description": "List all AI agents configured in the den.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "get_notes", "description": "Get all sticky notes from the workspace.", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "create_note", "description": "Create a new sticky note.", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "content": {"type": "string"}}, "required": ["content"]}},
+    {"name": "get_library", "description": "Get library entries (optionally filter by agent_id).", "inputSchema": {"type": "object", "properties": {"agent_id": {"type": "string"}}}},
+    {"name": "get_profile", "description": "Get the user profile and preferences.", "inputSchema": {"type": "object", "properties": {}}},
+]
+
+
+async def resolve_mcp_user(key: str) -> Optional[str]:
+    doc = await db.mcp_keys.find_one({"key": key}, {"_id": 0})
+    return doc["user_id"] if doc else None
+
+
+async def execute_mcp_tool(name: str, args: Dict[str, Any], user_id: str) -> str:
+    if name == "list_chats":
+        chats = await db.chats.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(50)
+        return json.dumps([{"id": c["id"], "title": c["title"], "mode": c.get("mode", "single")} for c in chats])
+    if name == "get_chat":
+        chat_id = args.get("chat_id", "")
+        msgs = await db.messages.find({"chat_id": chat_id, "user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(200)
+        return json.dumps([{"sender": m["sender_name"], "role": m["role"], "content": m["content"], "time": m.get("created_at", "")} for m in msgs])
+    if name == "send_message":
+        chat_id = args.get("chat_id", "")
+        content = args.get("content", "")
+        chat = await db.chats.find_one({"id": chat_id, "user_id": user_id}, {"_id": 0})
+        if not chat:
+            return json.dumps({"error": "Chat not found"})
+        agents_map = await get_agents_map(user_id)
+        selected = [agents_map[aid] for aid in chat.get("agent_ids", []) if aid in agents_map and agents_map[aid].get("enabled", True)]
+        keys = await stored_provider_keys(user_id)
+        human = ChatMessage(chat_id=chat_id, user_id=user_id, role="user", sender_name="MCP Client", sender_id="mcp", provider="mcp", content=content).model_dump()
+        await db.messages.insert_one(human.copy())
+        replies = []
+        for i, agent in enumerate(selected):
+            await asyncio.sleep(0.5 + i * 0.3)
+            mem = await agent_memory(user_id, agent["id"])
+            reply_text = await agent_reply(agent, content, mem, keys, chat_id, user_id)
+            ai_doc = ChatMessage(chat_id=chat_id, user_id=user_id, role="ai", sender_name=agent["name"], sender_id=agent["id"], provider=agent["provider"], content=reply_text).model_dump()
+            await db.messages.insert_one(ai_doc.copy())
+            replies.append({"agent": agent["name"], "reply": reply_text})
+        return json.dumps({"sent": True, "replies": replies})
+    if name == "list_agents":
+        agents = await db.agents.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(50)
+        return json.dumps([{"id": a["id"], "name": a["name"], "provider": a["provider"], "model": a.get("model", ""), "enabled": a.get("enabled", True)} for a in agents])
+    if name == "get_notes":
+        notes = await db.notes.find({"user_id": user_id}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+        return json.dumps([{"id": n["id"], "title": n.get("title", ""), "content": n.get("content", "")} for n in notes])
+    if name == "create_note":
+        note = {"id": str(uuid.uuid4()), "user_id": user_id, "title": args.get("title", ""), "content": args.get("content", ""), "color": "#fef08a", "author": "MCP", "created_at": now_iso(), "updated_at": now_iso()}
+        await db.notes.insert_one(note.copy())
+        return json.dumps({"created": True, "id": note["id"]})
+    if name == "get_library":
+        query: Dict[str, Any] = {"user_id": user_id}
+        if args.get("agent_id"):
+            query["agent_id"] = args["agent_id"]
+        entries = await db.library.find(query, {"_id": 0}).sort("updated_at", -1).to_list(200)
+        return json.dumps([{"id": e["id"], "title": e.get("title", ""), "category": e.get("category", "note"), "content": e.get("content", "")[:500]} for e in entries])
+    if name == "get_profile":
+        profile = await db.user_profiles.find_one({"id": user_id}, {"_id": 0}) or {}
+        prefs = await db.preferences.find_one({"user_id": user_id}, {"_id": 0}) or {}
+        return json.dumps({"name": profile.get("name", ""), "den_name": prefs.get("den_name", ""), "theme": prefs.get("theme", "light")})
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+@api_router.get("/mcp/key")
+async def get_mcp_key(user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    doc = await db.mcp_keys.find_one({"user_id": user_id}, {"_id": 0})
+    return {"key": doc["key"] if doc else None}
+
+
+@api_router.post("/mcp/key/generate")
+async def generate_mcp_key(user_id: str = Header(default="demo-user", alias="X-User-Id")):
+    key = str(uuid.uuid4()).replace("-", "") + str(uuid.uuid4()).replace("-", "")
+    await db.mcp_keys.update_one(
+        {"user_id": user_id},
+        {"$set": {"user_id": user_id, "key": key, "updated_at": now_iso()}, "$setOnInsert": {"created_at": now_iso()}},
+        upsert=True,
+    )
+    return {"key": key}
+
+
+@api_router.post("/mcp")
+async def mcp_rpc(request: Request):
+    key = request.headers.get("x-denlight-key", "")
+    if not key:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Missing X-Denlight-Key header"}, "id": None})
+    user_id = await resolve_mcp_user(key)
+    if not user_id:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid MCP key"}, "id": None})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None})
+    rpc_id = body.get("id")
+    method = body.get("method", "")
+    params = body.get("params") or {}
+
+    if method == "initialize":
+        return JSONResponse({"jsonrpc": "2.0", "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "denlight", "version": "1.0.0"}}, "id": rpc_id})
+    if method == "notifications/initialized":
+        return JSONResponse({"jsonrpc": "2.0", "result": {}, "id": rpc_id})
+    if method == "tools/list":
+        return JSONResponse({"jsonrpc": "2.0", "result": {"tools": MCP_TOOLS}, "id": rpc_id})
+    if method == "tools/call":
+        tool_name = params.get("name", "")
+        tool_args = params.get("arguments") or {}
+        result_text = await execute_mcp_tool(tool_name, tool_args, user_id)
+        return JSONResponse({"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": result_text}]}, "id": rpc_id})
+    return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32601, "message": f"Method not found: {method}"}, "id": rpc_id})
+
 
 # Include the router in the main app
 app.include_router(api_router)
