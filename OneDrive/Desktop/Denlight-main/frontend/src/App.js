@@ -126,6 +126,7 @@ function App() {
 
   const updateWorkspace = (patch) => setWorkspace((current) => ({ ...current, ...patch }));
   const savePreferences = async (payload) => {
+    updateWorkspace({ preferences: { ...workspace.preferences, ...payload } });
     const preferences = await api.preferences(payload);
     updateWorkspace({ preferences });
     toast.success("Appearance saved");
@@ -404,15 +405,16 @@ function App() {
   };
 
   const updatePetPrefs = async (petDraft) => {
+    const petFields = {
+      pet_id: petDraft.pet_id ?? workspace.preferences.pet_id,
+      pet_name: petDraft.pet_name ?? workspace.preferences.pet_name ?? "",
+      pet_emoji: petDraft.pet_emoji ?? workspace.preferences.pet_emoji ?? "",
+      pet_desc: petDraft.pet_desc ?? workspace.preferences.pet_desc ?? "",
+      pet_enabled: petDraft.pet_enabled !== undefined ? petDraft.pet_enabled : (workspace.preferences.pet_enabled !== false),
+    };
+    updateWorkspace({ preferences: { ...workspace.preferences, ...petFields } });
     try {
-      const updated = await api.preferences({
-        pet_id: petDraft.pet_id ?? workspace.preferences.pet_id,
-        pet_name: petDraft.pet_name ?? workspace.preferences.pet_name,
-        pet_emoji: petDraft.pet_emoji ?? workspace.preferences.pet_emoji,
-        pet_desc: petDraft.pet_desc ?? workspace.preferences.pet_desc,
-        pet_enabled: petDraft.pet_enabled !== undefined ? petDraft.pet_enabled : workspace.preferences.pet_enabled,
-      });
-      updateWorkspace({ preferences: { ...workspace.preferences, ...updated } });
+      await api.preferences(petFields);
       toast.success("Companion saved");
     } catch (error) {
       toast.error(error.message);
@@ -488,7 +490,7 @@ function App() {
 
   return (
     <div className={`${workspace.preferences.theme === "dark" ? "dark" : ""} ${workspace.preferences.sparkle_edges ? "sparkle-edges" : ""}`} style={{ "--accent": workspace.preferences.accent, "--userBubble": workspace.preferences.user_bubble, "--sparkle": workspace.preferences.sparkle_color || workspace.preferences.accent || "#d4af37", fontFamily: workspace.preferences.font }} data-testid="denlight-root">
-      <AppShell profile={workspace.profile} preferences={workspace.preferences} onMenu={() => setMenuOpen(true)} onTheme={() => savePreferences({ ...workspace.preferences, theme: workspace.preferences.theme === "dark" ? "light" : "dark" })}>
+      <AppShell profile={workspace.profile} preferences={workspace.preferences} onMenu={() => setMenuOpen(true)} onTheme={() => savePreferences({ ...workspace.preferences, theme: workspace.preferences.theme === "dark" ? "light" : "dark" })} onHome={() => setView("home")}>
         <div className={`workspace-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} data-testid="workspace-layout">
           <Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} chats={workspace.chats} activeChatId={activeChat?.id} openChat={openChat} createChat={createChat} renameChat={renameChat} deleteChat={deleteChat} agents={workspace.agents} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed((c) => !c)} denName={workspace.preferences.den_name || "Your Den"} />
           <div className="content-area" data-testid="content-area" data-current-view={view}>{renderView()}</div>

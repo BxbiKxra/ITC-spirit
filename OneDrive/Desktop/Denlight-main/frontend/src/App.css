@@ -48,7 +48,7 @@ button { cursor: pointer; }
 }
 
 .brand-lockup, .topbar-actions, .mini-profile, .theme-toggle, .status-pill, .history-title, .new-chat-button, .chat-actions, .participant-strip span, .rich-toolbar, .input-shell, .agent-card-head, .bubble-tools { display: flex; align-items: center; gap: 10px; }
-.brand-lockup { font-family: "Playfair Display", serif; font-size: 1.45rem; font-weight: 700; }
+.brand-lockup { font-family: "Playfair Display", serif; font-size: 1.45rem; font-weight: 700; background: none; border: none; padding: 0; cursor: pointer; color: inherit; }
 .brand-lockup svg, .eyebrow { color: var(--accent); }
 .theme-toggle, .icon-button, .status-pill, .chat-actions button, .new-chat-button, .bento-card button, .send-button, .reply-button {
   border: 1px solid var(--line);
@@ -582,15 +582,17 @@ button { cursor: pointer; }
 .music-ai-note { font-size: .82rem; color: var(--mutedText); background: rgba(212,175,55,.07); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; margin: 0; line-height: 1.6; }
 
 /* ── Hatch Pet ────────────────────────────────────── */
-@keyframes petFloat    { 0%,100% { transform: translateY(0) }       50% { transform: translateY(-8px) } }
-@keyframes petFlicker  { 0%,100% { transform: scale(1) }            50% { transform: scale(1.08) } }
-@keyframes petBreathe  { 0%,100% { transform: scale(1) }            60% { transform: scale(1.06) } }
-@keyframes petDrift    { 0%,100% { transform: translateX(0) }       50% { transform: translateX(6px) } }
-@keyframes petBounce   { 0%,100% { transform: translateY(0) }       40% { transform: translateY(-7px) } 60% { transform: translateY(-3px) } }
-@keyframes petSway     { 0%,100% { transform: rotate(0deg) }        50% { transform: rotate(7deg) } }
+@keyframes petFloat    { 0%,100% { transform: translateY(0) }       50% { transform: translateY(-4px) } }
+@keyframes petFlicker  { 0%,100% { transform: scale(1) }            50% { transform: scale(1.04) } }
+@keyframes petBreathe  { 0%,100% { transform: scale(1) }            60% { transform: scale(1.03) } }
+@keyframes petDrift    { 0%,100% { transform: translateX(0) }       50% { transform: translateX(4px) } }
+@keyframes petBounce   { 0%,100% { transform: translateY(0) }       40% { transform: translateY(-5px) } 60% { transform: translateY(-2px) } }
+@keyframes petSway     { 0%,100% { transform: rotate(0deg) }        50% { transform: rotate(4deg) } }
 @keyframes petJitter   { 0%     { transform: translate(0,0) }      25% { transform: translate(1px,-1px) } 50% { transform: translate(-1px,1px) } 75% { transform: translate(1px,1px) } 100% { transform: translate(0,0) } }
-@keyframes petPulse    { 0%,100% { opacity: 1 }                     50% { opacity: .55 } }
+@keyframes petPulse    { 0%,100% { opacity: 1 }                     50% { opacity: .7 } }
 @keyframes bubblePop   { from { transform: scale(.75); opacity: 0 } to { transform: scale(1); opacity: 1 } }
+@keyframes petHop      { 0%,100% { transform: translateY(0) } 35% { transform: translateY(-16px) } 65% { transform: translateY(-6px) } }
+@keyframes petWander   { 0% { transform: translateX(0) translateY(0) } 20% { transform: translateX(-16px) translateY(-5px) } 45% { transform: translateX(-38px) translateY(0) } 70% { transform: translateX(-18px) translateY(-4px) } 100% { transform: translateX(0) translateY(0) } }
 
 @keyframes spriteCycle { to { background-position-x: var(--sprite-end, -600px); } }
 .hatch-pet-sprite { image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
@@ -605,14 +607,16 @@ button { cursor: pointer; }
 .hatch-pet-wrapper:hover .hatch-pet-settings-btn { opacity: .5; }
 .hatch-pet-settings-btn:hover { opacity: 1 !important; }
 
-.petFloat   { animation: petFloat   4s ease-in-out infinite; }
-.petFlicker { animation: petFlicker 1.4s ease-in-out infinite; }
-.petBreathe { animation: petBreathe 3s ease-in-out infinite; }
-.petDrift   { animation: petDrift   5s ease-in-out infinite; }
-.petBounce  { animation: petBounce  2s ease-in-out infinite; }
-.petSway    { animation: petSway    3s ease-in-out infinite; }
-.petJitter  { animation: petJitter  .35s linear infinite; }
-.petPulse   { animation: petPulse   2.5s ease-in-out infinite; }
+.petFloat   { animation: petFloat   8s ease-in-out infinite; }
+.petFlicker { animation: petFlicker 6s ease-in-out infinite; }
+.petBreathe { animation: petBreathe 7s ease-in-out infinite; }
+.petDrift   { animation: petDrift   9s ease-in-out infinite; }
+.petBounce  { animation: petBounce  7s ease-in-out infinite; }
+.petSway    { animation: petSway    7s ease-in-out infinite; }
+.petJitter  { animation: petJitter  .55s linear infinite; }
+.petPulse   { animation: petPulse   6s ease-in-out infinite; }
+.hatch-pet-btn.petHop    { animation: petHop    .7s cubic-bezier(.36,.07,.19,.97) !important; }
+.hatch-pet-btn.petWander { animation: petWander 2.2s ease-in-out          !important; }
 
 .hatch-pet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 310; display: flex; align-items: flex-end; justify-content: flex-end; }
 .hatch-pet-modal { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 22px; width: 320px; margin: 18px; max-height: 85vh; overflow-y: auto; box-shadow: 0 24px 64px rgba(0,0,0,.35); }
